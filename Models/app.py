@@ -6,20 +6,28 @@ from surprise import SVD
 
 app = Flask(__name__)
 
-# Load the model from the pickled file
+# Define the path to the model file
 model_path = 'Model.pkl'
+
+# Load the model
 try:
     with open(model_path, 'rb') as f:
         model_svd = pickle.load(f)
+        print("Model loaded successfully.")
 except FileNotFoundError:
     model_svd = None
+    print("Model file not found.")
 
-# Load the processed product data
-csv_path = 'Processed.csv'
+# Define the path to the CSV file
+csv_path = os.path.join('Data', 'Processed.csv')
+
+# Load the CSV file
 try:
     data = pd.read_csv(csv_path)
+    print("CSV file loaded successfully.")
 except FileNotFoundError:
     data = None
+    print("CSV file not found.")
 
 # Get mapping of product IDs to item names
 if data is not None:
