@@ -12,7 +12,9 @@ data = pd.read_csv("Data/Processed.csv")
 reader = Reader(rating_scale=(0, 1))
 
 # Load the dataset into the Surprise format
-data_surprise = Dataset.load_from_df(data[['user_id', 'product_id', 'is_purchased']], reader)
+data_surprise = Dataset.load_from_df(
+    data[["user_id", "product_id", "is_purchased"]], reader
+)
 
 # Split the dataset into training and testing sets
 trainset, testset = train_test_split(data_surprise, test_size=0.2, random_state=42)
@@ -27,13 +29,13 @@ predictions_svd = model_svd.test(testset)
 # Evaluate the model
 rmse_svd = accuracy.rmse(predictions_svd)
 mae_svd = accuracy.mae(predictions_svd)
-#print(f'SVD Model - RMSE: {rmse_svd}, MAE: {mae_svd}')
+# print(f'SVD Model - RMSE: {rmse_svd}, MAE: {mae_svd}')
 
 # Define the filename for the pickle file in the current directory
-model_svd_filename = 'Model.pkl'
+model_svd_filename = "Model.pkl"
 
 # Dump the trained SVD model into the pickle file
-with open(model_svd_filename, 'wb') as f:
+with open(model_svd_filename, "wb") as f:
     pickle.dump(model_svd, f)
 
 print("SVD model saved to", model_svd_filename)
