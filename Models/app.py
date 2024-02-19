@@ -55,6 +55,10 @@ def recommend():
             for item, rating in sorted_ratings_svd[:2]
         ]
 
+        print("Top Recommendations for User", user_id)
+        for recommendation in top_recommendations_svd:
+            print(recommendation)
+
         return jsonify({"recommendations": top_recommendations_svd})
     else:
         return jsonify({"error": "Model or data not found."})
