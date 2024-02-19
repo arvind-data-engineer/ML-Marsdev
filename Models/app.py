@@ -47,12 +47,9 @@ def recommend():
         predicted_ratings_svd = [
             (item, model_svd.predict(user_id, item).est) for item in all_products
         ]
-        sorted_ratings_svd = sorted(
-            predicted_ratings_svd, key=lambda x: x[1], reverse=True
-        )
+        sorted_ratings_svd = sorted(predicted_ratings_svd, key=lambda x: x[1], reverse=True)
         top_recommendations_svd = [
-            product_id_to_item_name.get(item, "Unknown")
-            for item, rating in sorted_ratings_svd[:2]
+            product_id_to_item_name.get(item, "Unknown") for item, rating in sorted_ratings_svd[:2]
         ]
 
         return jsonify({"recommendations": top_recommendations_svd})

@@ -23,7 +23,8 @@ Purchase_df["unit"] = Purchase_df["unit"].cat.codes
 cols = ["id", "created_at", "updated_at"]
 Purchase_df = Purchase_df.drop(cols, axis=1)
 Purchase_df.rename(
-    columns={"product": "product_id", "added_by": "user_id"}, inplace=True
+    columns={"product": "product_id", "added_by": "user_id"},
+    inplace=True,
 )
 
 # Preprocessing Fav_location_df
@@ -55,14 +56,13 @@ merged_df = pd.merge(merged_df, Fav_location_df, on="user_id", how="inner")
 # Dropping duplicate location column and renaming columns
 merged_df.drop("location_y", axis=1, inplace=True)
 merged_df.rename(
-    columns={"location_x": "favlocation", "name": "Product_name"}, inplace=True
+    columns={"location_x": "favlocation", "name": "Product_name"},
+    inplace=True,
 )
 
 # Normalize numerical variables
 scaler = StandardScaler()
-merged_df["quantity"] = scaler.fit_transform(
-    merged_df["quantity"].values.reshape(-1, 1)
-)
+merged_df["quantity"] = scaler.fit_transform(merged_df["quantity"].values.reshape(-1, 1))
 
 # Encode target variable
 merged_df["is_purchased"] = merged_df["is_purchased"].astype(int)

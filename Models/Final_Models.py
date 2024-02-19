@@ -12,9 +12,7 @@ data = pd.read_csv("Data/Processed.csv")
 reader = Reader(rating_scale=(0, 1))
 
 # Load the dataset into the Surprise format
-data_surprise = Dataset.load_from_df(
-    data[["user_id", "product_id", "is_purchased"]], reader
-)
+data_surprise = Dataset.load_from_df(data[["user_id", "product_id", "is_purchased"]], reader)
 
 # Split the dataset into training and testing sets
 trainset, testset = train_test_split(data_surprise, test_size=0.2, random_state=42)
