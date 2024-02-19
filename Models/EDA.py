@@ -62,7 +62,9 @@ merged_df.rename(
 
 # Normalize numerical variables
 scaler = StandardScaler()
-merged_df["quantity"] = scaler.fit_transform(merged_df["quantity"].values.reshape(-1, 1))
+merged_df["quantity"] = scaler.fit_transform(
+    merged_df["quantity"].values.reshape(-1, 1)
+)
 
 # Encode target variable
 merged_df["is_purchased"] = merged_df["is_purchased"].astype(int)
