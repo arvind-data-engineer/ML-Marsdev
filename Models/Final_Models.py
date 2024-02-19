@@ -17,9 +17,7 @@ data_surprise = Dataset.load_from_df(
 )
 
 # Split the dataset into training and testing sets
-trainset, testset = train_test_split(
-    data_surprise, test_size=0.2, random_state=42
-)
+trainset, testset = train_test_split(data_surprise, test_size=0.2, random_state=42)
 
 # Train the SVD model
 model_svd = SVD()

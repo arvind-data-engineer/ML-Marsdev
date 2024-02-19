@@ -31,9 +31,7 @@ except FileNotFoundError:
 
 # Get mapping of product IDs to item names
 if data is not None:
-    product_id_to_item_name = data.set_index("product_id")[
-        "Product_name"
-    ].to_dict()
+    product_id_to_item_name = data.set_index("product_id")["Product_name"].to_dict()
 else:
     product_id_to_item_name = {}
 
@@ -47,8 +45,7 @@ def recommend():
 
         # SVD recommendations
         predicted_ratings_svd = [
-            (item, model_svd.predict(user_id, item).est)
-            for item in all_products
+            (item, model_svd.predict(user_id, item).est) for item in all_products
         ]
         sorted_ratings_svd = sorted(
             predicted_ratings_svd, key=lambda x: x[1], reverse=True
