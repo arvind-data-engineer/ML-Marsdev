@@ -45,19 +45,16 @@ def recommend():
 
         # SVD recommendations
         predicted_ratings_svd = [
-            (item, model_svd.predict(user_id, item).est) for item in all_products
+            (item, model_svd.predict(int(user_id), item).est) for item in all_products
         ]
-        sorted_ratings_svd = sorted(
-            predicted_ratings_svd, key=lambda x: x[1], reverse=True
-        )
+        sorted_ratings_svd = sorted(predicted_ratings_svd, key=lambda x: x[1], reverse=True)
         top_recommendations_svd = [
-            product_id_to_item_name.get(item, "Unknown")
-            for item, rating in sorted_ratings_svd[:2]
+            {
+                "user_id": int(user_id),  # Convert to regular Python int
+                "product_id": int(item),  # Convert to regular Python int
+                "product_name": product_id_to_item_name.get(item, "Unknown")
+            } for item, rating in sorted_ratings_svd[:2]
         ]
-
-        print("Top Recommendations for User", user_id)
-        for recommendation in top_recommendations_svd:
-            print(recommendation)
 
         return jsonify({"recommendations": top_recommendations_svd})
     else:
@@ -65,4 +62,5 @@ def recommend():
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=True, host="0.0.0.0", port=5000, use_reloader=False)
+
