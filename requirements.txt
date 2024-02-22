@@ -4,3 +4,6 @@ scikit-learn
 Pyarrow
 surprise
 flask
+sqlalchemy
+python-dotenv
+psycopg2-binary

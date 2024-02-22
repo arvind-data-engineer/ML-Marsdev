@@ -7,5 +7,6 @@
         "*test.py"
     ],
     "python.testing.pytestEnabled": false,
-    "python.testing.unittestEnabled": true
+    "python.testing.unittestEnabled": true,
+    "cmake.sourceDirectory": "/home/veturih/ML/venv/lib/python3.10/site-packages/pyarrow/src/arrow/python"
 }

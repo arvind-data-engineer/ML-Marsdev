@@ -52,7 +52,9 @@ def recommend():
             {
                 "user_id": int(user_id),  # Convert to regular Python int
                 "product_id": int(item),  # Convert to regular Python int
-                "product_name": product_id_to_item_name.get(item, "Unknown")
+                "product_name": product_id_to_item_name.get(item, "Unknown"),
+                "background_color": data[data["product_id"] == item]["background_color"].iloc[0],
+                "image": data[data["product_id"] == item]["image"].iloc[0]
             } for item, rating in sorted_ratings_svd[:2]
         ]
 
