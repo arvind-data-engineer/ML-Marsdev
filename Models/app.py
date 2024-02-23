@@ -47,15 +47,20 @@ def recommend():
         predicted_ratings_svd = [
             (item, model_svd.predict(int(user_id), item).est) for item in all_products
         ]
-        sorted_ratings_svd = sorted(predicted_ratings_svd, key=lambda x: x[1], reverse=True)
+        sorted_ratings_svd = sorted(
+            predicted_ratings_svd, key=lambda x: x[1], reverse=True
+        )
         top_recommendations_svd = [
             {
                 "user_id": int(user_id),  # Convert to regular Python int
                 "product_id": int(item),  # Convert to regular Python int
                 "product_name": product_id_to_item_name.get(item, "Unknown"),
-                "background_color": data[data["product_id"] == item]["background_color"].iloc[0],
-                "image": data[data["product_id"] == item]["image"].iloc[0]
-            } for item, rating in sorted_ratings_svd[:2]
+                "background_color": data[data["product_id"] == item][
+                    "background_color"
+                ].iloc[0],
+                "image": data[data["product_id"] == item]["image"].iloc[0],
+            }
+            for item, rating in sorted_ratings_svd[:2]
         ]
 
         return jsonify({"recommendations": top_recommendations_svd})
