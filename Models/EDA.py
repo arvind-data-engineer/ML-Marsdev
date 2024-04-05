@@ -36,7 +36,7 @@ def load_data_from_db():
         "product_items": "SELECT * FROM product_items",
         "product_category": "SELECT * FROM product_category",
         "users_favoriteproduct": "SELECT * FROM users_favoriteproduct",
-        "users_favoritelocation": "SELECT * FROM users_favoritelocation",
+        "users_favoritelocation": "SELECT *,ST_Y(ST_AsText(location)) AS latitude, ST_X(ST_AsText(location)) AS longitude FROM users_favoritelocation WHERE ST_IsValid(location)",
     }
 
     # Execute queries and store results in DataFrames

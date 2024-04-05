@@ -4,6 +4,7 @@ import pandas as pd
 import os
 from surprise import SVD
 import logging
+from geopy.distance import geodesic
 
 app = Flask(__name__)
 
@@ -35,19 +36,27 @@ def load_data():
     except FileNotFoundError:
         app.logger.error("CSV file not found.")
 
-def get_top_recommendations(user_id, num_recommendations=2):
+def get_top_recommendations(user_id, latitude, longitude, num_recommendations=2):
     if model_svd is not None and data is not None:
         all_products = data["product_id"].unique()
-        predicted_ratings_svd = [(item, model_svd.predict(user_id, item).est) for item in all_products]
-        sorted_ratings_svd = sorted(predicted_ratings_svd, key=lambda x: x[1], reverse=True)
-        top_recommendations_svd = [{
-            "user_id": user_id,
-            "product_id": int(item),
-            "product_name": product_id_to_item_name.get(item, "Unknown"),
-            "background_color": data[data["product_id"] == item]["background_color"].iloc[0],
-            "image": data[data["product_id"] == item]["image"].iloc[0],
-        } for item, rating in sorted_ratings_svd[:num_recommendations]]
-        return top_recommendations_svd
+        recommendations = []
+        
+        for item in all_products:
+            product_lat = data[data["product_id"] == item]["latitude"].iloc[0]
+            product_long = data[data["product_id"] == item]["longitude"].iloc[0]
+            distance = geodesic((latitude, longitude), (product_lat, product_long)).kilometers
+            recommendations.append({
+                "user_id": user_id,
+                "product_id": int(item),
+                "product_name": product_id_to_item_name.get(item, "Unknown"),
+                "background_color": data[data["product_id"] == item]["background_color"].iloc[0],
+                "image": data[data["product_id"] == item]["image"].iloc[0],
+            })
+        
+        # No need to sort recommendations by predicted rating
+        top_recommendations = recommendations[:num_recommendations]
+        
+        return top_recommendations
     else:
         app.logger.error("Model or data not found.")
         return []
@@ -55,7 +64,9 @@ def get_top_recommendations(user_id, num_recommendations=2):
 @app.route("/recommend", methods=["GET"])
 def recommend():
     user_id = int(request.args.get("user_id", default=123))
-    recommendations = get_top_recommendations(user_id)
+    latitude = float(request.args.get("latitude", default=0.0))
+    longitude = float(request.args.get("longitude", default=0.0))
+    recommendations = get_top_recommendations(user_id, latitude, longitude)
     return jsonify({"recommendations": recommendations})
 
 if __name__ == "__main__":

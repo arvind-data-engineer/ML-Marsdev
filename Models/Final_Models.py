@@ -16,14 +16,23 @@ MODEL_PATH = "Model.pkl"
 def load_data(data_path):
     try:
         data = pd.read_csv(data_path)
+        # Assuming your CSV file has columns: user_id, product_id, is_purchased, latitude, longitude
         reader = Reader(rating_scale=(0, 1))
         data_surprise = Dataset.load_from_df(data[["user_id", "product_id", "is_purchased"]], reader)
+        
+        # Adding latitude and longitude as additional features
+        data_surprise.df = data_surprise.df.assign(latitude=data['latitude'], longitude=data['longitude'])
+
         trainset, testset = train_test_split(data_surprise, test_size=0.2, random_state=42)
         logger.info("Data loaded successfully.")
         return trainset, testset
     except FileNotFoundError:
         logger.error("Data file not found.")
         return None, None
+    except Exception as e:
+        logger.error(f"Error loading data: {str(e)}")
+        return None, None
+
 
 def train_model(trainset):
     model_svd = SVD()
