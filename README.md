@@ -63,6 +63,11 @@ This project trains a scikit-learn matrix-factorization product recommendation m
    python Models/app.py
    ```
 
+   Confirm the active model and data:
+   ```bash
+   curl "http://127.0.0.1:5000/health"
+   ```
+
 7. Request recommendations:
    ```bash
    curl "http://127.0.0.1:5000/recommend?user_id=123&latitude=12.97&longitude=77.59&limit=5"
@@ -89,6 +94,14 @@ The API ranks products using a hybrid recommendation model:
 - diversity reranking to avoid repetitive results
 
 New users automatically fall back to popularity and nearby products until they have enough interaction history.
+
+If recommendations look unchanged after a model update:
+- run `python Models/EDA.py` if your database data changed
+- run `python Models/Final_Models.py` to rebuild `Models/Model.pkl`
+- call `/health` and confirm `model_version` is `v4_weighted_hybrid`
+- include behavior columns such as `interaction_score`, `is_favorite`,
+  `added_to_cart`, or `view_count`; otherwise the model only has purchase data
+  and may rank similarly
 
 ## Model Versions
 

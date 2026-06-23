@@ -23,30 +23,58 @@ POPULARITY_WEIGHT = 0.10
 DIVERSITY_PENALTY = 0.05
 
 model_artifact = None
+model_last_modified = None
 data = None
 product_catalog = None
+data_last_modified = None
 
 
 def load_model():
-    global model_artifact
+    global model_artifact, model_last_modified
     try:
         with open(MODEL_PATH, "rb") as file:
             model_artifact = pickle.load(file)
+        model_last_modified = MODEL_PATH.stat().st_mtime
         app.logger.info("Model loaded successfully from %s.", MODEL_PATH)
     except FileNotFoundError:
+        model_artifact = None
+        model_last_modified = None
         app.logger.error("Model file not found at %s.", MODEL_PATH)
 
 
 def load_data():
-    global data, product_catalog
+    global data, product_catalog, data_last_modified
     try:
         data = pd.read_csv(CSV_PATH)
         product_catalog = build_product_catalog(data)
+        data_last_modified = CSV_PATH.stat().st_mtime
         app.logger.info("CSV file loaded successfully with %s products.", len(product_catalog))
     except FileNotFoundError:
+        data = None
+        product_catalog = None
+        data_last_modified = None
         app.logger.error("CSV file not found at %s.", CSV_PATH)
     except ValueError as exc:
+        data = None
+        product_catalog = None
+        data_last_modified = None
         app.logger.error("Invalid product CSV: %s", exc)
+
+
+def reload_assets_if_changed():
+    if MODEL_PATH.exists():
+        current_model_mtime = MODEL_PATH.stat().st_mtime
+        if model_artifact is None or model_last_modified != current_model_mtime:
+            load_model()
+    elif model_artifact is not None:
+        load_model()
+
+    if CSV_PATH.exists():
+        current_data_mtime = CSV_PATH.stat().st_mtime
+        if product_catalog is None or data_last_modified != current_data_mtime:
+            load_data()
+    elif product_catalog is not None:
+        load_data()
 
 
 def build_product_catalog(raw_data):
@@ -350,10 +378,23 @@ def diversify_recommendations(recommendations, limit, diversity_weight):
 
 @app.before_request
 def ensure_assets_loaded():
-    if model_artifact is None:
-        load_model()
-    if product_catalog is None:
-        load_data()
+    reload_assets_if_changed()
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify(
+        {
+            "model_loaded": model_artifact is not None,
+            "model_version": model_artifact.get("version") if model_artifact else None,
+            "model_path": str(MODEL_PATH),
+            "model_last_modified": model_last_modified,
+            "data_loaded": product_catalog is not None,
+            "data_path": str(CSV_PATH),
+            "data_last_modified": data_last_modified,
+            "product_count": int(len(product_catalog)) if product_catalog is not None else 0,
+        }
+    )
 
 
 @app.route("/recommend", methods=["GET"])
@@ -384,6 +425,8 @@ def recommend():
                 "diversity_weight": diversity_weight,
                 "exclude_seen": exclude_seen,
                 "model_version": model_artifact.get("version") if model_artifact else None,
+                "model_last_modified": model_last_modified,
+                "data_last_modified": data_last_modified,
             },
         }
     )
