@@ -1,5 +1,5 @@
-user_id,product_id,is_purchased,interaction_score,Product_name,latitude,longitude,category,brand,price,tags,description,availability,seller,seller_location,background_color,image
-1,101,1,1.0,Sample Product A,12.9716,77.5946,Fresh,Sample Brand,120,organic seasonal,"Fresh organic produce",in_stock,Seller A,Bengaluru,#ffffff,https://example.com/a.jpg
-1,102,0,0.2,Sample Product B,12.9352,77.6245,Fresh,Sample Brand,95,budget local,"Local fresh product",in_stock,Seller B,Bengaluru,#f4f4f4,https://example.com/b.jpg
-2,101,0,0.2,Sample Product A,12.9716,77.5946,Fresh,Sample Brand,120,organic seasonal,"Fresh organic produce",in_stock,Seller A,Bengaluru,#ffffff,https://example.com/a.jpg
-2,103,1,1.0,Sample Product C,13.0827,80.2707,Pantry,Pantry Co,220,premium packaged,"Long shelf-life pantry item",limited,Seller C,Chennai,#eeeeee,https://example.com/c.jpg
+user_id,product_id,is_purchased,interaction_score,interaction_timestamp,Product_name,latitude,longitude,category,brand,price,tags,description,availability,seller,seller_location,background_color,image
+1,101,1,1.0,2026-06-20T10:00:00Z,Sample Product A,12.9716,77.5946,Fresh,Sample Brand,120,organic seasonal,"Fresh organic produce",in_stock,Seller A,Bengaluru,#ffffff,https://example.com/a.jpg
+1,102,0,0.2,2026-06-21T09:00:00Z,Sample Product B,12.9352,77.6245,Fresh,Sample Brand,95,budget local,"Local fresh product",in_stock,Seller B,Bengaluru,#f4f4f4,https://example.com/b.jpg
+2,101,0,0.2,2026-05-02T08:30:00Z,Sample Product A,12.9716,77.5946,Fresh,Sample Brand,120,organic seasonal,"Fresh organic produce",in_stock,Seller A,Bengaluru,#ffffff,https://example.com/a.jpg
+2,103,1,1.0,2026-06-22T14:15:00Z,Sample Product C,13.0827,80.2707,Pantry,Pantry Co,220,premium packaged,"Long shelf-life pantry item",limited,Seller C,Chennai,#eeeeee,https://example.com/c.jpg

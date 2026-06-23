@@ -18,12 +18,30 @@ DATA_PATH = PROJECT_ROOT / "Data" / "Processed.csv"
 MODEL_PATH = PROJECT_ROOT / "Models" / "Model.pkl"
 EXAMPLE_DATA_PATH = PROJECT_ROOT / "Data" / "Processed.example.csv"
 REQUIRED_COLUMNS = {"user_id", "product_id", "is_purchased"}
-MODEL_VERSION = "v5_content_features"
+MODEL_VERSION = "v6_time_decay"
 RANDOM_STATE = 42
 POPULARITY_SMOOTHING = 5
 MAX_SIMILAR_ITEMS = 20
 MAX_CONTENT_SIMILAR_ITEMS = 30
 INTERACTION_SCORE_COLUMN = "interaction_score"
+TIME_WEIGHTED_SCORE_COLUMN = "time_weighted_interaction_score"
+RECENCY_WEIGHT_COLUMN = "recency_weight"
+LATEST_EVENT_TIME_COLUMN = "latest_event_time"
+RECENCY_HALF_LIFE_DAYS = 30
+RECENT_INTERACTION_DAYS = 14
+MIN_RECENCY_WEIGHT = 0.05
+TIME_COLUMNS = [
+    "interaction_timestamp",
+    "event_time",
+    "event_timestamp",
+    "created_at",
+    "updated_at",
+    "purchased_at",
+    "order_date",
+    "viewed_at",
+    "favorited_at",
+    "carted_at",
+]
 CONTENT_FEATURE_COLUMNS = [
     "category",
     "category_name",
@@ -68,13 +86,33 @@ def load_interactions(data_path):
         logger.error("Required training columns are: %s", sorted(REQUIRED_COLUMNS))
         return None
 
-    interactions = data[["user_id", "product_id", "is_purchased"]].dropna().copy()
+    event_time_column = find_event_time_column(data)
+    selected_columns = ["user_id", "product_id", "is_purchased"]
+    if event_time_column:
+        selected_columns.append(event_time_column)
+
+    interactions = data[selected_columns].dropna(subset=["user_id", "product_id", "is_purchased"]).copy()
     interactions[INTERACTION_SCORE_COLUMN] = build_interaction_score(data)
+    interactions[RECENCY_WEIGHT_COLUMN] = build_recency_weight(data)
+    interactions[TIME_WEIGHTED_SCORE_COLUMN] = (
+        interactions[INTERACTION_SCORE_COLUMN] * interactions[RECENCY_WEIGHT_COLUMN]
+    ).clip(0, 1)
     interactions["is_purchased"] = pd.to_numeric(interactions["is_purchased"], errors="coerce").fillna(0).clip(0, 1)
-    interactions = interactions.groupby(["user_id", "product_id"], as_index=False).agg(
-        is_purchased=("is_purchased", "max"),
-        interaction_score=(INTERACTION_SCORE_COLUMN, "max"),
-    )
+    aggregation = {
+        "is_purchased": ("is_purchased", "max"),
+        INTERACTION_SCORE_COLUMN: (INTERACTION_SCORE_COLUMN, "max"),
+        RECENCY_WEIGHT_COLUMN: (RECENCY_WEIGHT_COLUMN, "max"),
+        TIME_WEIGHTED_SCORE_COLUMN: (TIME_WEIGHTED_SCORE_COLUMN, "max"),
+    }
+    if event_time_column:
+        interactions[LATEST_EVENT_TIME_COLUMN] = pd.to_datetime(
+            interactions[event_time_column],
+            errors="coerce",
+            utc=True,
+        )
+        aggregation[LATEST_EVENT_TIME_COLUMN] = (LATEST_EVENT_TIME_COLUMN, "max")
+
+    interactions = interactions.groupby(["user_id", "product_id"], as_index=False).agg(**aggregation)
 
     logger.info("Loaded %s interaction rows from %s.", len(interactions), data_path)
     return interactions
@@ -103,11 +141,35 @@ def build_interaction_score(data):
     return score.clip(0, 1)
 
 
+def find_event_time_column(data):
+    for column in TIME_COLUMNS:
+        if column in data.columns:
+            return column
+    return None
+
+
+def build_recency_weight(data):
+    event_time_column = find_event_time_column(data)
+    if event_time_column is None:
+        return pd.Series(1.0, index=data.index)
+
+    event_times = pd.to_datetime(data[event_time_column], errors="coerce", utc=True)
+    if event_times.notna().sum() == 0:
+        return pd.Series(1.0, index=data.index)
+
+    latest_event_time = event_times.max()
+    age_days = (latest_event_time - event_times).dt.total_seconds() / 86400
+    weights = 0.5 ** (age_days / RECENCY_HALF_LIFE_DAYS)
+    weights = weights.fillna(MIN_RECENCY_WEIGHT).clip(MIN_RECENCY_WEIGHT, 1)
+    logger.info("Applied time decay from column: %s", event_time_column)
+    return weights
+
+
 def build_interaction_matrix(interactions):
     matrix = interactions.pivot_table(
         index="user_id",
         columns="product_id",
-        values=INTERACTION_SCORE_COLUMN,
+        values=TIME_WEIGHTED_SCORE_COLUMN,
         fill_value=0,
         aggfunc="max",
     )
@@ -142,6 +204,22 @@ def build_user_positive_items(interactions):
     return positive_rows.groupby("user_id")["product_id"].apply(list).to_dict()
 
 
+def build_user_recent_positive_items(interactions):
+    if LATEST_EVENT_TIME_COLUMN not in interactions.columns:
+        return {}
+
+    latest_event_time = interactions[LATEST_EVENT_TIME_COLUMN].max()
+    if pd.isna(latest_event_time):
+        return {}
+
+    recent_cutoff = latest_event_time - pd.Timedelta(days=RECENT_INTERACTION_DAYS)
+    recent_rows = interactions[
+        (interactions[INTERACTION_SCORE_COLUMN] > 0)
+        & (interactions[LATEST_EVENT_TIME_COLUMN] >= recent_cutoff)
+    ]
+    return recent_rows.groupby("user_id")["product_id"].apply(list).to_dict()
+
+
 def find_category_column(data):
     for column in ["category", "category_name", "category_id"]:
         if column in data.columns:
@@ -155,12 +233,14 @@ def build_category_affinity(data):
         return {}, {}
 
     clean_data = data[["user_id", "product_id", "is_purchased", category_column]].dropna().copy()
-    clean_data[INTERACTION_SCORE_COLUMN] = build_interaction_score(data).loc[clean_data.index]
-    positive_rows = clean_data[clean_data[INTERACTION_SCORE_COLUMN] > 0]
+    clean_data[TIME_WEIGHTED_SCORE_COLUMN] = (
+        build_interaction_score(data).loc[clean_data.index] * build_recency_weight(data).loc[clean_data.index]
+    ).clip(0, 1)
+    positive_rows = clean_data[clean_data[TIME_WEIGHTED_SCORE_COLUMN] > 0]
     if positive_rows.empty:
         return {}, {}
 
-    user_category_counts = positive_rows.groupby(["user_id", category_column]).size()
+    user_category_counts = positive_rows.groupby(["user_id", category_column])[TIME_WEIGHTED_SCORE_COLUMN].sum()
     category_affinity = {}
     for user_id, user_counts in user_category_counts.groupby(level=0):
         counts = user_counts.droplevel(0)
@@ -282,9 +362,10 @@ def build_model_artifact(interactions, raw_data):
     trained = train_model(interaction_matrix)
     similar_items = build_item_similarity(interaction_matrix)
     user_positive_items = build_user_positive_items(interactions)
+    user_recent_positive_items = build_user_recent_positive_items(interactions)
     category_affinity, product_categories = build_category_affinity(raw_data)
     product_content, similar_content_items, content_feature_columns = build_product_content_profiles(raw_data)
-    product_stats = interactions.groupby("product_id")[INTERACTION_SCORE_COLUMN].agg(["sum", "count"])
+    product_stats = interactions.groupby("product_id")[TIME_WEIGHTED_SCORE_COLUMN].agg(["sum", "count"])
     global_mean = float(interaction_matrix.values.mean())
     smoothed_popularity = (
         (product_stats["sum"] + POPULARITY_SMOOTHING * global_mean)
@@ -294,7 +375,7 @@ def build_model_artifact(interactions, raw_data):
     product_purchase_count = purchase_stats["sum"].astype(int).to_dict()
     product_behavior_score = product_stats["sum"].to_dict()
     product_interaction_count = product_stats["count"].astype(int).to_dict()
-    user_activity = interactions.groupby("user_id")[INTERACTION_SCORE_COLUMN].agg(["sum", "count"])
+    user_activity = interactions.groupby("user_id")[TIME_WEIGHTED_SCORE_COLUMN].agg(["sum", "count"])
     user_purchase_count = interactions.groupby("user_id")["is_purchased"].sum().astype(int).to_dict()
 
     if trained is None:
@@ -318,6 +399,7 @@ def build_model_artifact(interactions, raw_data):
         "product_popularity": smoothed_popularity,
         "similar_items": similar_items,
         "user_positive_items": user_positive_items,
+        "user_recent_positive_items": user_recent_positive_items,
         "category_affinity": category_affinity,
         "product_categories": product_categories,
         "product_content": product_content,
@@ -332,6 +414,11 @@ def build_model_artifact(interactions, raw_data):
         "global_mean": global_mean,
         "popularity_smoothing": POPULARITY_SMOOTHING,
         "interaction_score_column": INTERACTION_SCORE_COLUMN,
+        "time_weighted_score_column": TIME_WEIGHTED_SCORE_COLUMN,
+        "recency_weight_column": RECENCY_WEIGHT_COLUMN,
+        "time_columns": TIME_COLUMNS,
+        "recency_half_life_days": RECENCY_HALF_LIFE_DAYS,
+        "recent_interaction_days": RECENT_INTERACTION_DAYS,
         "behavior_weights": BEHAVIOR_WEIGHTS,
     }
 

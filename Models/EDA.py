@@ -66,6 +66,10 @@ def preprocess_data(dataframes):
 
     purchase_df = dataframes["list_product"].copy()
     purchase_df = purchase_df.dropna(axis=1, how="all")
+    if "created_at" in purchase_df.columns:
+        purchase_df = purchase_df.rename(columns={"created_at": "interaction_timestamp"})
+    elif "updated_at" in purchase_df.columns:
+        purchase_df = purchase_df.rename(columns={"updated_at": "interaction_timestamp"})
     if "unit" in purchase_df.columns:
         purchase_df["unit"] = pd.Categorical(purchase_df["unit"]).codes
     purchase_df = purchase_df.drop(["id", "created_at", "updated_at"], axis=1, errors="ignore")

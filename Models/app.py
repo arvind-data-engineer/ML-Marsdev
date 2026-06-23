@@ -16,10 +16,11 @@ DEFAULT_RECOMMENDATIONS = 5
 DISTANCE_WEIGHT = 0.2
 MAX_LIMIT = 50
 USER_CONFIDENCE_INTERACTIONS = 5
-COLLABORATIVE_WEIGHT = 0.55
+COLLABORATIVE_WEIGHT = 0.45
 SIMILARITY_WEIGHT = 0.25
 CONTENT_WEIGHT = 0.10
 POPULARITY_WEIGHT = 0.10
+RECENCY_WEIGHT = 0.10
 DIVERSITY_PENALTY = 0.05
 
 model_artifact = None
@@ -243,6 +244,30 @@ def get_similarity_score(user_id, product_id):
     return max(0.0, min(1.0, best_score))
 
 
+def get_recent_interest_score(user_id, product_id):
+    if model_artifact is None:
+        return 0.0
+
+    recent_positive_items = lookup(model_artifact.get("user_recent_positive_items", {}), user_id, [])
+    if not recent_positive_items:
+        return 0.0
+
+    recent_items = set(recent_positive_items)
+    similar_items = model_artifact.get("similar_items", {})
+    similar_content_items = model_artifact.get("similar_content_items", {})
+    best_score = 0.0
+
+    for recent_product_id in recent_items:
+        for similar_product_id, score in lookup(similar_items, recent_product_id, []):
+            if similar_product_id == product_id:
+                best_score = max(best_score, float(score))
+        for similar_product_id, score in lookup(similar_content_items, recent_product_id, []):
+            if similar_product_id == product_id:
+                best_score = max(best_score, float(score))
+
+    return max(0.0, min(1.0, best_score))
+
+
 def get_content_score(user_id, product_id):
     if model_artifact is None:
         return 0.0
@@ -280,6 +305,7 @@ def get_content_similarity_score(user_id, product_id):
 def build_preference_score(user_id, product_id):
     estimated_rating = max(0, min(1, estimate_rating(user_id, product_id)))
     similarity_score = get_similarity_score(user_id, product_id)
+    recent_interest_score = get_recent_interest_score(user_id, product_id)
     content_score = get_content_score(user_id, product_id)
     popularity_score = max(0, min(1, get_popularity_score(product_id)))
     user_confidence = get_user_confidence(user_id)
@@ -289,13 +315,15 @@ def build_preference_score(user_id, product_id):
         + (SIMILARITY_WEIGHT * similarity_score)
         + (CONTENT_WEIGHT * content_score)
         + (POPULARITY_WEIGHT * popularity_score)
+        + (RECENCY_WEIGHT * recent_interest_score)
     )
-    cold_start_score = (0.75 * popularity_score) + (0.25 * content_score)
+    cold_start_score = (0.65 * popularity_score) + (0.25 * content_score) + (0.10 * recent_interest_score)
     preference_score = (user_confidence * personalized_score) + ((1 - user_confidence) * cold_start_score)
 
     return {
         "estimated_rating": estimated_rating,
         "similarity_score": similarity_score,
+        "recent_interest_score": recent_interest_score,
         "content_score": content_score,
         "popularity_score": popularity_score,
         "preference_score": max(0.0, min(1.0, preference_score)),
@@ -303,7 +331,16 @@ def build_preference_score(user_id, product_id):
     }
 
 
-def get_recommendation_reason(user_confidence, similarity_score, content_score, popularity_score, proximity_score):
+def get_recommendation_reason(
+    user_confidence,
+    similarity_score,
+    recent_interest_score,
+    content_score,
+    popularity_score,
+    proximity_score,
+):
+    if recent_interest_score >= 0.5:
+        return "recent_interest"
     if user_confidence >= 0.8:
         if similarity_score >= 0.5:
             return "similar_to_liked"
@@ -362,6 +399,7 @@ def get_top_recommendations(
             "product_name": to_json_value(getattr(product, "Product_name")),
             "estimated_rating": round(preference["estimated_rating"], 4),
             "similarity_score": round(preference["similarity_score"], 4),
+            "recent_interest_score": round(preference["recent_interest_score"], 4),
             "content_score": round(preference["content_score"], 4),
             "popularity_score": round(preference["popularity_score"], 4),
             "preference_score": round(preference["preference_score"], 4),
@@ -371,6 +409,7 @@ def get_top_recommendations(
             "reason": get_recommendation_reason(
                 preference["user_confidence"],
                 preference["similarity_score"],
+                preference["recent_interest_score"],
                 preference["content_score"],
                 preference["popularity_score"],
                 proximity_score,
@@ -428,6 +467,8 @@ def health():
             "data_last_modified": data_last_modified,
             "product_count": int(len(product_catalog)) if product_catalog is not None else 0,
             "content_feature_columns": model_artifact.get("content_feature_columns", []) if model_artifact else [],
+            "recency_half_life_days": model_artifact.get("recency_half_life_days") if model_artifact else None,
+            "recent_interaction_days": model_artifact.get("recent_interaction_days") if model_artifact else None,
         }
     )
 
@@ -463,6 +504,8 @@ def recommend():
                 "model_last_modified": model_last_modified,
                 "data_last_modified": data_last_modified,
                 "content_feature_columns": model_artifact.get("content_feature_columns", []) if model_artifact else [],
+                "recency_half_life_days": model_artifact.get("recency_half_life_days") if model_artifact else None,
+                "recent_interaction_days": model_artifact.get("recent_interaction_days") if model_artifact else None,
             },
         }
     )
