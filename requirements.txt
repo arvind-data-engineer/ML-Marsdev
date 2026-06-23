@@ -1,0 +1,9 @@
+pandas
+numpy
+scikit-learn
+Pyarrow
+flask
+sqlalchemy
+python-dotenv
+psycopg2-binary
+geopy

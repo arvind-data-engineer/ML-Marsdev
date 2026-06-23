@@ -1,0 +1,2 @@
+Model.pkl filter=lfs diff=lfs merge=lfs -text
+Data/Processed.csv filter=lfs diff=lfs merge=lfs -text
