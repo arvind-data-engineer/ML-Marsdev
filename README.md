@@ -25,8 +25,11 @@ This project trains a scikit-learn matrix-factorization product recommendation m
    The easiest way to connect your own database is to set `DATABASE_URL` and
    `PROCESSED_DATA_QUERY`. The query should return:
    `user_id, product_id, is_purchased, Product_name, latitude, longitude`.
-   Optional product columns are `background_color`, `image`, `category`,
-   `category_name`, `price`, `unit`, and `description`.
+   Optional product content columns improve cold-start recommendations:
+   `category`, `category_name`, `category_id`, `brand`, `price`, `unit`,
+   `tags`, `description`, `availability`, `seller`, `seller_id`,
+   `seller_name`, `seller_location`, `location`, `city`, `state`, `area`,
+   `background_color`, and `image`.
 
    Optional behavior columns improve model quality:
    - `interaction_score`: direct 0 to 1 user-product score
@@ -37,7 +40,7 @@ This project trains a scikit-learn matrix-factorization product recommendation m
    Example:
    ```env
    DATABASE_URL=postgresql+psycopg2://user:password@localhost:5432/products
-   PROCESSED_DATA_QUERY=SELECT user_id, product_id, purchased AS is_purchased, name AS "Product_name", latitude, longitude, image FROM recommendations_view
+   PROCESSED_DATA_QUERY=SELECT user_id, product_id, purchased AS is_purchased, name AS "Product_name", latitude, longitude, category, brand, price, tags, description, availability, seller_name, seller_location, image FROM recommendations_view
    ```
 
    You can also use MySQL, SQLite, SQL Server, or another SQLAlchemy-supported
@@ -87,7 +90,8 @@ This project trains a scikit-learn matrix-factorization product recommendation m
 The API ranks products using a hybrid recommendation model:
 - collaborative SVD score
 - item-to-item similarity from previous purchases
-- optional category/content affinity when your data has `category`, `category_name`, or `category_id`
+- product content similarity from category, brand, price tier, tags,
+  description, availability, seller, and location fields
 - weighted behavior signals such as purchase, favorite, cart, and view events
 - smoothed product popularity for new users
 - location proximity
@@ -98,14 +102,17 @@ New users automatically fall back to popularity and nearby products until they h
 If recommendations look unchanged after a model update:
 - run `python Models/EDA.py` if your database data changed
 - run `python Models/Final_Models.py` to rebuild `Models/Model.pkl`
-- call `/health` and confirm `model_version` is `v4_weighted_hybrid`
+- call `/health` and confirm `model_version` is `v5_content_features`
 - include behavior columns such as `interaction_score`, `is_favorite`,
   `added_to_cart`, or `view_count`; otherwise the model only has purchase data
   and may rank similarly
 
 ## Model Versions
 
-- `v4_weighted_hybrid`: current model. Uses weighted behavior scores, SVD,
+- `v5_content_features`: current model. Adds product content profiles for
+  cold-start products using category, brand, price, tags, description,
+  availability, seller, and location fields.
+- `v4_weighted_hybrid`: uses weighted behavior scores, SVD,
   item similarity, content/category affinity, popularity, location, and
   diversity reranking.
 - `v3_hybrid`: hybrid model with SVD, item similarity, category affinity,

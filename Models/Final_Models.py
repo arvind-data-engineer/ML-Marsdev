@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from sklearn.decomposition import TruncatedSVD
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from sklearn.model_selection import train_test_split
 from sklearn.metrics.pairwise import cosine_similarity
@@ -17,11 +18,29 @@ DATA_PATH = PROJECT_ROOT / "Data" / "Processed.csv"
 MODEL_PATH = PROJECT_ROOT / "Models" / "Model.pkl"
 EXAMPLE_DATA_PATH = PROJECT_ROOT / "Data" / "Processed.example.csv"
 REQUIRED_COLUMNS = {"user_id", "product_id", "is_purchased"}
-MODEL_VERSION = "v4_weighted_hybrid"
+MODEL_VERSION = "v5_content_features"
 RANDOM_STATE = 42
 POPULARITY_SMOOTHING = 5
 MAX_SIMILAR_ITEMS = 20
+MAX_CONTENT_SIMILAR_ITEMS = 30
 INTERACTION_SCORE_COLUMN = "interaction_score"
+CONTENT_FEATURE_COLUMNS = [
+    "category",
+    "category_name",
+    "category_id",
+    "brand",
+    "tags",
+    "description",
+    "availability",
+    "seller",
+    "seller_id",
+    "seller_name",
+    "seller_location",
+    "location",
+    "city",
+    "state",
+    "area",
+]
 BEHAVIOR_WEIGHTS = {
     "is_purchased": 1.0,
     "is_favorite": 0.8,
@@ -158,6 +177,60 @@ def build_category_affinity(data):
     return category_affinity, product_categories
 
 
+def build_product_content_profiles(data):
+    available_columns = [column for column in CONTENT_FEATURE_COLUMNS if column in data.columns]
+    if not available_columns:
+        return {}, {}, []
+
+    product_data = data[["product_id", *available_columns]].drop_duplicates("product_id").copy()
+    content_parts = []
+    for column in available_columns:
+        values = product_data[column].fillna("").astype(str)
+        content_parts.append(values.str.replace(r"[,|;/]", " ", regex=True))
+
+    if "price" in data.columns:
+        price_data = data[["product_id", "price"]].drop_duplicates("product_id").copy()
+        price_data["price"] = pd.to_numeric(price_data["price"], errors="coerce")
+        product_data = product_data.merge(price_data, on="product_id", how="left")
+        price_count = int(product_data["price"].notna().sum())
+        if price_count > 1:
+            tier_count = min(4, price_count)
+            product_data["price_tier"] = pd.qcut(
+                product_data["price"].rank(method="first"),
+                q=tier_count,
+                labels=["budget", "value", "premium", "luxury"][:tier_count],
+                duplicates="drop",
+            )
+            content_parts.append(product_data["price_tier"].astype(str).replace("nan", ""))
+            available_columns.append("price_tier")
+
+    product_data["content_text"] = pd.concat(content_parts, axis=1).agg(" ".join, axis=1).str.lower().str.strip()
+    product_content = product_data.set_index("product_id")["content_text"].to_dict()
+
+    if not product_data["content_text"].str.len().gt(0).any():
+        return product_content, {}, available_columns
+
+    vectorizer = TfidfVectorizer(min_df=1, ngram_range=(1, 2))
+    content_matrix = vectorizer.fit_transform(product_data["content_text"])
+    similarity_matrix = cosine_similarity(content_matrix)
+    product_ids = list(product_data["product_id"])
+    similar_content_items = {}
+
+    for product_index, product_id in enumerate(product_ids):
+        similarities = []
+        for other_index, other_product_id in enumerate(product_ids):
+            if product_index == other_index:
+                continue
+            score = float(similarity_matrix[product_index, other_index])
+            if score > 0:
+                similarities.append((other_product_id, score))
+
+        similarities.sort(key=lambda item: item[1], reverse=True)
+        similar_content_items[product_id] = similarities[:MAX_CONTENT_SIMILAR_ITEMS]
+
+    return product_content, similar_content_items, available_columns
+
+
 def train_model(interaction_matrix):
     max_components = min(interaction_matrix.shape) - 1
     n_components = max(1, min(50, max_components))
@@ -210,6 +283,7 @@ def build_model_artifact(interactions, raw_data):
     similar_items = build_item_similarity(interaction_matrix)
     user_positive_items = build_user_positive_items(interactions)
     category_affinity, product_categories = build_category_affinity(raw_data)
+    product_content, similar_content_items, content_feature_columns = build_product_content_profiles(raw_data)
     product_stats = interactions.groupby("product_id")[INTERACTION_SCORE_COLUMN].agg(["sum", "count"])
     global_mean = float(interaction_matrix.values.mean())
     smoothed_popularity = (
@@ -246,6 +320,9 @@ def build_model_artifact(interactions, raw_data):
         "user_positive_items": user_positive_items,
         "category_affinity": category_affinity,
         "product_categories": product_categories,
+        "product_content": product_content,
+        "similar_content_items": similar_content_items,
+        "content_feature_columns": content_feature_columns,
         "product_purchase_count": product_purchase_count,
         "product_behavior_score": product_behavior_score,
         "product_interaction_count": product_interaction_count,

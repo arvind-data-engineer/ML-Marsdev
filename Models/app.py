@@ -93,9 +93,21 @@ def build_product_catalog(raw_data):
         "image",
         "category",
         "category_name",
+        "category_id",
+        "brand",
         "price",
         "unit",
+        "tags",
         "description",
+        "availability",
+        "seller",
+        "seller_id",
+        "seller_name",
+        "seller_location",
+        "location",
+        "city",
+        "state",
+        "area",
     ]
     aggregation = {
         "Product_name": "first",
@@ -236,11 +248,33 @@ def get_content_score(user_id, product_id):
         return 0.0
 
     product_category = lookup(model_artifact.get("product_categories", {}), product_id)
-    if product_category is None:
+    user_affinity = lookup(model_artifact.get("category_affinity", {}), user_id, {})
+    category_score = 0.0
+    if product_category is not None:
+        category_score = float(lookup(user_affinity, product_category, 0.0))
+
+    content_similarity_score = get_content_similarity_score(user_id, product_id)
+    return max(category_score, content_similarity_score)
+
+
+def get_content_similarity_score(user_id, product_id):
+    if model_artifact is None:
         return 0.0
 
-    user_affinity = lookup(model_artifact.get("category_affinity", {}), user_id, {})
-    return float(lookup(user_affinity, product_category, 0.0))
+    user_positive_items = lookup(model_artifact.get("user_positive_items", {}), user_id, [])
+    if not user_positive_items:
+        return 0.0
+
+    positive_items = set(user_positive_items)
+    similar_content_items = model_artifact.get("similar_content_items", {})
+    best_score = 0.0
+
+    for positive_product_id in positive_items:
+        for similar_product_id, score in lookup(similar_content_items, positive_product_id, []):
+            if similar_product_id == product_id:
+                best_score = max(best_score, float(score))
+
+    return max(0.0, min(1.0, best_score))
 
 
 def build_preference_score(user_id, product_id):
@@ -393,6 +427,7 @@ def health():
             "data_path": str(CSV_PATH),
             "data_last_modified": data_last_modified,
             "product_count": int(len(product_catalog)) if product_catalog is not None else 0,
+            "content_feature_columns": model_artifact.get("content_feature_columns", []) if model_artifact else [],
         }
     )
 
@@ -427,6 +462,7 @@ def recommend():
                 "model_version": model_artifact.get("version") if model_artifact else None,
                 "model_last_modified": model_last_modified,
                 "data_last_modified": data_last_modified,
+                "content_feature_columns": model_artifact.get("content_feature_columns", []) if model_artifact else [],
             },
         }
     )
