@@ -101,20 +101,25 @@ The API ranks products using a hybrid recommendation model:
 - smoothed product popularity for new users
 - location proximity
 - diversity reranking to avoid repetitive results
+- saved evaluation metrics including Precision@K, Recall@K, MAP@K, NDCG@K,
+  coverage, and diversity
 
 New users automatically fall back to popularity and nearby products until they have enough interaction history.
 
 If recommendations look unchanged after a model update:
 - run `python Models/EDA.py` if your database data changed
 - run `python Models/Final_Models.py` to rebuild `Models/Model.pkl`
-- call `/health` and confirm `model_version` is `v6_time_decay`
+- call `/health` and confirm `model_version` is `v7_evaluation_metrics`
 - include behavior columns such as `interaction_score`, `is_favorite`,
   `added_to_cart`, or `view_count`; otherwise the model only has purchase data
   and may rank similarly
 
 ## Model Versions
 
-- `v6_time_decay`: current model. Applies time decay to user interactions so
+- `v7_evaluation_metrics`: current model. Saves RMSE, MAE, Precision@K,
+  Recall@K, MAP@K, NDCG@K, coverage, and diversity metrics in `Model.pkl`
+  and exposes them through `/health`.
+- `v6_time_decay`: applies time decay to user interactions so
   recent purchases, views, favorites, or cart activity influence ranking more
   than older behavior.
 - `v5_content_features`: adds product content profiles for
@@ -127,3 +132,24 @@ If recommendations look unchanged after a model update:
   popularity, location, and diversity reranking.
 - `v2_popularity_fallback`: SVD model with smoothed popularity fallback for
   cold-start users.
+
+## Evaluation Metrics
+
+After training, `Models/Model.pkl` includes an `evaluation_metrics` object.
+The same metrics are visible from:
+
+```bash
+curl "http://127.0.0.1:5000/health"
+```
+
+Metrics included:
+- `precision_at_k`: how many recommended products are relevant
+- `recall_at_k`: how many relevant products appear in the recommendations
+- `map_at_k`: ranking quality with higher credit for early hits
+- `ndcg_at_k`: ranking quality with position discounting
+- `coverage_at_k`: how much of the catalog appears across recommendations
+- `diversity_at_k`: how varied the recommended categories/content are
+
+Current evaluation is `in_sample_ranking`, which is useful for comparing model
+versions during development. A stricter future version should add a true
+train/test time split.

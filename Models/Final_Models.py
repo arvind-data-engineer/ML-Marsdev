@@ -18,11 +18,12 @@ DATA_PATH = PROJECT_ROOT / "Data" / "Processed.csv"
 MODEL_PATH = PROJECT_ROOT / "Models" / "Model.pkl"
 EXAMPLE_DATA_PATH = PROJECT_ROOT / "Data" / "Processed.example.csv"
 REQUIRED_COLUMNS = {"user_id", "product_id", "is_purchased"}
-MODEL_VERSION = "v6_time_decay"
+MODEL_VERSION = "v7_evaluation_metrics"
 RANDOM_STATE = 42
 POPULARITY_SMOOTHING = 5
 MAX_SIMILAR_ITEMS = 20
 MAX_CONTENT_SIMILAR_ITEMS = 30
+EVALUATION_K_VALUES = [5, 10]
 INTERACTION_SCORE_COLUMN = "interaction_score"
 TIME_WEIGHTED_SCORE_COLUMN = "time_weighted_interaction_score"
 RECENCY_WEIGHT_COLUMN = "recency_weight"
@@ -344,7 +345,7 @@ def evaluate_model(interactions, interaction_matrix, reconstructed):
         product_index = product_positions.get(row.product_id)
         if user_index is None or product_index is None:
             continue
-        actual.append(getattr(row, INTERACTION_SCORE_COLUMN))
+        actual.append(getattr(row, TIME_WEIGHTED_SCORE_COLUMN))
         predicted.append(reconstructed[user_index, product_index])
 
     if not actual:
@@ -355,6 +356,124 @@ def evaluate_model(interactions, interaction_matrix, reconstructed):
     mae = mean_absolute_error(actual, predicted)
     logger.info("Model evaluation - RMSE: %.4f, MAE: %.4f", rmse, mae)
     return rmse, mae
+
+
+def average_precision_at_k(recommended_ids, relevant_ids, k):
+    hits = 0
+    precision_sum = 0.0
+
+    for rank, product_id in enumerate(recommended_ids[:k], start=1):
+        if product_id in relevant_ids:
+            hits += 1
+            precision_sum += hits / rank
+
+    return precision_sum / min(len(relevant_ids), k) if relevant_ids else 0.0
+
+
+def ndcg_at_k(recommended_ids, relevant_ids, k):
+    dcg = 0.0
+    for rank, product_id in enumerate(recommended_ids[:k], start=1):
+        if product_id in relevant_ids:
+            dcg += 1 / np.log2(rank + 1)
+
+    ideal_hits = min(len(relevant_ids), k)
+    ideal_dcg = sum(1 / np.log2(rank + 1) for rank in range(1, ideal_hits + 1))
+    return dcg / ideal_dcg if ideal_dcg else 0.0
+
+
+def diversity_at_k(recommended_ids, product_categories, similar_content_items, k):
+    top_ids = recommended_ids[:k]
+    if len(top_ids) < 2:
+        return 1.0 if top_ids else 0.0
+
+    categories = [product_categories.get(product_id) for product_id in top_ids]
+    known_categories = [category for category in categories if category is not None]
+    if known_categories:
+        return len(set(known_categories)) / len(known_categories)
+
+    similarity_lookup = {}
+    for product_id, similar_items in similar_content_items.items():
+        for similar_product_id, score in similar_items:
+            similarity_lookup[(product_id, similar_product_id)] = float(score)
+            similarity_lookup[(similar_product_id, product_id)] = float(score)
+
+    pairwise_similarities = []
+    for index, product_id in enumerate(top_ids):
+        for other_product_id in top_ids[index + 1 :]:
+            pairwise_similarities.append(similarity_lookup.get((product_id, other_product_id), 0.0))
+
+    if not pairwise_similarities:
+        return 1.0
+    return 1 - float(np.mean(pairwise_similarities))
+
+
+def evaluate_ranking_metrics(
+    interactions,
+    interaction_matrix,
+    reconstructed,
+    product_popularity,
+    product_categories,
+    similar_content_items,
+):
+    product_ids = list(interaction_matrix.columns)
+    if not product_ids:
+        return {}
+
+    product_positions = {product_id: index for index, product_id in enumerate(product_ids)}
+    relevant_by_user = (
+        interactions[interactions[TIME_WEIGHTED_SCORE_COLUMN] > 0]
+        .groupby("user_id")["product_id"]
+        .apply(set)
+        .to_dict()
+    )
+    if not relevant_by_user:
+        return {}
+
+    metric_values = {
+        k: {"precision": [], "recall": [], "map": [], "ndcg": [], "diversity": [], "recommended": set()}
+        for k in EVALUATION_K_VALUES
+    }
+
+    for user_id, relevant_ids in relevant_by_user.items():
+        if user_id not in interaction_matrix.index:
+            continue
+
+        user_index = interaction_matrix.index.get_loc(user_id)
+        if reconstructed is not None:
+            scores = {product_id: float(reconstructed[user_index, product_positions[product_id]]) for product_id in product_ids}
+        else:
+            scores = {product_id: float(product_popularity.get(product_id, 0.0)) for product_id in product_ids}
+
+        recommended_ids = sorted(product_ids, key=lambda product_id: scores.get(product_id, 0.0), reverse=True)
+        if not recommended_ids:
+            continue
+
+        for k in EVALUATION_K_VALUES:
+            top_k = recommended_ids[:k]
+            hits = len(set(top_k).intersection(relevant_ids))
+            metric_values[k]["precision"].append(hits / k)
+            metric_values[k]["recall"].append(hits / len(relevant_ids))
+            metric_values[k]["map"].append(average_precision_at_k(recommended_ids, relevant_ids, k))
+            metric_values[k]["ndcg"].append(ndcg_at_k(recommended_ids, relevant_ids, k))
+            metric_values[k]["diversity"].append(diversity_at_k(recommended_ids, product_categories, similar_content_items, k))
+            metric_values[k]["recommended"].update(top_k)
+
+    metrics = {}
+    product_count = len(product_ids)
+    for k, values in metric_values.items():
+        if not values["precision"]:
+            continue
+        metrics[f"precision_at_{k}"] = float(np.mean(values["precision"]))
+        metrics[f"recall_at_{k}"] = float(np.mean(values["recall"]))
+        metrics[f"map_at_{k}"] = float(np.mean(values["map"]))
+        metrics[f"ndcg_at_{k}"] = float(np.mean(values["ndcg"]))
+        metrics[f"coverage_at_{k}"] = len(values["recommended"]) / product_count if product_count else 0.0
+        metrics[f"diversity_at_{k}"] = float(np.mean(values["diversity"]))
+
+    for name, value in metrics.items():
+        logger.info("Ranking metric - %s: %.4f", name, value)
+
+    return metrics
 
 
 def build_model_artifact(interactions, raw_data):
@@ -382,9 +501,27 @@ def build_model_artifact(interactions, raw_data):
         reconstructed = None
         user_factors = None
         product_factors = None
+        rmse = None
+        mae = None
     else:
         _, user_factors, product_factors, reconstructed = trained
-        evaluate_model(interactions, interaction_matrix, reconstructed)
+        rmse, mae = evaluate_model(interactions, interaction_matrix, reconstructed)
+
+    ranking_metrics = evaluate_ranking_metrics(
+        interactions,
+        interaction_matrix,
+        reconstructed,
+        smoothed_popularity,
+        product_categories,
+        similar_content_items,
+    )
+    evaluation_metrics = {
+        "rmse": rmse,
+        "mae": mae,
+        **ranking_metrics,
+        "evaluation_k_values": EVALUATION_K_VALUES,
+        "evaluation_type": "in_sample_ranking",
+    }
 
     return {
         "model_type": "sklearn_truncated_svd",
@@ -420,6 +557,7 @@ def build_model_artifact(interactions, raw_data):
         "recency_half_life_days": RECENCY_HALF_LIFE_DAYS,
         "recent_interaction_days": RECENT_INTERACTION_DAYS,
         "behavior_weights": BEHAVIOR_WEIGHTS,
+        "evaluation_metrics": evaluation_metrics,
     }
 
 

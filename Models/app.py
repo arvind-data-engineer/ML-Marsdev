@@ -469,6 +469,7 @@ def health():
             "content_feature_columns": model_artifact.get("content_feature_columns", []) if model_artifact else [],
             "recency_half_life_days": model_artifact.get("recency_half_life_days") if model_artifact else None,
             "recent_interaction_days": model_artifact.get("recent_interaction_days") if model_artifact else None,
+            "evaluation_metrics": model_artifact.get("evaluation_metrics", {}) if model_artifact else {},
         }
     )
 
@@ -506,6 +507,7 @@ def recommend():
                 "content_feature_columns": model_artifact.get("content_feature_columns", []) if model_artifact else [],
                 "recency_half_life_days": model_artifact.get("recency_half_life_days") if model_artifact else None,
                 "recent_interaction_days": model_artifact.get("recent_interaction_days") if model_artifact else None,
+                "evaluation_metrics": model_artifact.get("evaluation_metrics", {}) if model_artifact else {},
             },
         }
     )
