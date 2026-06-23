@@ -1,5 +1,5 @@
-user_id,product_id,is_purchased,Product_name,latitude,longitude,background_color,image
-1,101,1,Sample Product A,12.9716,77.5946,#ffffff,https://example.com/a.jpg
-1,102,0,Sample Product B,12.9352,77.6245,#f4f4f4,https://example.com/b.jpg
-2,101,0,Sample Product A,12.9716,77.5946,#ffffff,https://example.com/a.jpg
-2,103,1,Sample Product C,13.0827,80.2707,#eeeeee,https://example.com/c.jpg
+user_id,product_id,is_purchased,interaction_score,Product_name,latitude,longitude,category,background_color,image
+1,101,1,1.0,Sample Product A,12.9716,77.5946,Fresh,#ffffff,https://example.com/a.jpg
+1,102,0,0.2,Sample Product B,12.9352,77.6245,Fresh,#f4f4f4,https://example.com/b.jpg
+2,101,0,0.2,Sample Product A,12.9716,77.5946,Fresh,#ffffff,https://example.com/a.jpg
+2,103,1,1.0,Sample Product C,13.0827,80.2707,Pantry,#eeeeee,https://example.com/c.jpg

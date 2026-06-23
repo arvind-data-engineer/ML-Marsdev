@@ -25,7 +25,14 @@ This project trains a scikit-learn matrix-factorization product recommendation m
    The easiest way to connect your own database is to set `DATABASE_URL` and
    `PROCESSED_DATA_QUERY`. The query should return:
    `user_id, product_id, is_purchased, Product_name, latitude, longitude`.
-   Optional columns are `background_color` and `image`.
+   Optional product columns are `background_color`, `image`, `category`,
+   `category_name`, `price`, `unit`, and `description`.
+
+   Optional behavior columns improve model quality:
+   - `interaction_score`: direct 0 to 1 user-product score
+   - `is_favorite` or `favorite`
+   - `added_to_cart`, `is_cart`, or `cart_count`
+   - `viewed` or `view_count`
 
    Example:
    ```env
@@ -61,4 +68,34 @@ This project trains a scikit-learn matrix-factorization product recommendation m
    curl "http://127.0.0.1:5000/recommend?user_id=123&latitude=12.97&longitude=77.59&limit=5"
    ```
 
-The API ranks products using the trained collaborative filtering model and a small location-proximity boost.
+   Optional query parameters:
+   - `limit`: number of recommendations, from 1 to 50
+   - `distance_weight`: location importance, from 0 to 1. Default is `0.2`
+   - `diversity_weight`: reduces repeated categories in the top results. Default is `0.05`
+   - `exclude_seen`: hide previously purchased products. Default is `true`
+
+   Example with stronger nearby-product ranking:
+   ```bash
+   curl "http://127.0.0.1:5000/recommend?user_id=123&latitude=12.97&longitude=77.59&limit=10&distance_weight=0.4"
+   ```
+
+The API ranks products using a hybrid recommendation model:
+- collaborative SVD score
+- item-to-item similarity from previous purchases
+- optional category/content affinity when your data has `category`, `category_name`, or `category_id`
+- weighted behavior signals such as purchase, favorite, cart, and view events
+- smoothed product popularity for new users
+- location proximity
+- diversity reranking to avoid repetitive results
+
+New users automatically fall back to popularity and nearby products until they have enough interaction history.
+
+## Model Versions
+
+- `v4_weighted_hybrid`: current model. Uses weighted behavior scores, SVD,
+  item similarity, content/category affinity, popularity, location, and
+  diversity reranking.
+- `v3_hybrid`: hybrid model with SVD, item similarity, category affinity,
+  popularity, location, and diversity reranking.
+- `v2_popularity_fallback`: SVD model with smoothed popularity fallback for
+  cold-start users.

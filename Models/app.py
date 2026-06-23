@@ -14,7 +14,13 @@ MODEL_PATH = PROJECT_ROOT / "Models" / "Model.pkl"
 CSV_PATH = PROJECT_ROOT / "Data" / "Processed.csv"
 DEFAULT_RECOMMENDATIONS = 5
 DISTANCE_WEIGHT = 0.2
-RATING_WEIGHT = 1 - DISTANCE_WEIGHT
+MAX_LIMIT = 50
+USER_CONFIDENCE_INTERACTIONS = 5
+COLLABORATIVE_WEIGHT = 0.55
+SIMILARITY_WEIGHT = 0.25
+CONTENT_WEIGHT = 0.10
+POPULARITY_WEIGHT = 0.10
+DIVERSITY_PENALTY = 0.05
 
 model_artifact = None
 data = None
@@ -54,7 +60,15 @@ def build_product_catalog(raw_data):
     clean_data["longitude"] = pd.to_numeric(clean_data["longitude"], errors="coerce")
     clean_data = clean_data.dropna(subset=["product_id", "latitude", "longitude"])
 
-    optional_columns = ["background_color", "image"]
+    optional_columns = [
+        "background_color",
+        "image",
+        "category",
+        "category_name",
+        "price",
+        "unit",
+        "description",
+    ]
     aggregation = {
         "Product_name": "first",
         "latitude": "first",
@@ -64,23 +78,39 @@ def build_product_catalog(raw_data):
     return clean_data.groupby("product_id", as_index=False).agg(aggregation)
 
 
+def parse_bool(value, default=False):
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "y"}
+
+
 def parse_request_args():
     try:
         user_id = int(request.args.get("user_id", default=123))
         latitude = float(request.args.get("latitude", default=0.0))
         longitude = float(request.args.get("longitude", default=0.0))
         limit = int(request.args.get("limit", default=DEFAULT_RECOMMENDATIONS))
+        distance_weight = float(request.args.get("distance_weight", default=DISTANCE_WEIGHT))
+        diversity_weight = float(request.args.get("diversity_weight", default=DIVERSITY_PENALTY))
     except (TypeError, ValueError) as exc:
-        raise ValueError("user_id, latitude, longitude, and limit must be numeric.") from exc
+        raise ValueError(
+            "user_id, latitude, longitude, limit, distance_weight, and diversity_weight must be numeric."
+        ) from exc
 
     if not -90 <= latitude <= 90:
         raise ValueError("latitude must be between -90 and 90.")
     if not -180 <= longitude <= 180:
         raise ValueError("longitude must be between -180 and 180.")
-    if not 1 <= limit <= 50:
-        raise ValueError("limit must be between 1 and 50.")
+    if not 1 <= limit <= MAX_LIMIT:
+        raise ValueError(f"limit must be between 1 and {MAX_LIMIT}.")
+    if not 0 <= distance_weight <= 1:
+        raise ValueError("distance_weight must be between 0 and 1.")
+    if not 0 <= diversity_weight <= 0.5:
+        raise ValueError("diversity_weight must be between 0 and 0.5.")
 
-    return user_id, latitude, longitude, limit
+    exclude_seen = parse_bool(request.args.get("exclude_seen"), default=True)
+
+    return user_id, latitude, longitude, limit, distance_weight, diversity_weight, exclude_seen
 
 
 def to_json_value(value):
@@ -89,6 +119,20 @@ def to_json_value(value):
     if hasattr(value, "item"):
         return value.item()
     return value
+
+
+def lookup(mapping, key, default=None):
+    if not isinstance(mapping, dict):
+        return default
+    if key in mapping:
+        return mapping[key]
+    clean_key = to_json_value(key)
+    if clean_key in mapping:
+        return mapping[clean_key]
+    string_key = str(clean_key)
+    if string_key in mapping:
+        return mapping[string_key]
+    return default
 
 
 def get_seen_product_ids(user_id):
@@ -105,18 +149,112 @@ def estimate_rating(user_id, product_id):
     if model_artifact is None:
         return 0.0
 
-    user_index = model_artifact.get("user_id_to_index", {}).get(user_id)
-    product_index = model_artifact.get("product_id_to_index", {}).get(product_id)
+    user_index = lookup(model_artifact.get("user_id_to_index", {}), user_id)
+    product_index = lookup(model_artifact.get("product_id_to_index", {}), product_id)
     predicted_matrix = model_artifact.get("predicted_matrix")
 
     if user_index is not None and product_index is not None and predicted_matrix is not None:
         return float(predicted_matrix[user_index, product_index])
 
-    popularity = model_artifact.get("product_popularity", {}).get(product_id)
+    popularity = lookup(model_artifact.get("product_popularity", {}), product_id)
     if popularity is not None:
         return float(popularity)
 
     return float(model_artifact.get("global_mean", 0.0))
+
+
+def get_popularity_score(product_id):
+    if model_artifact is None:
+        return 0.0
+    popularity = lookup(model_artifact.get("product_popularity", {}), product_id)
+    if popularity is not None:
+        return float(popularity)
+    return float(model_artifact.get("global_mean", 0.0))
+
+
+def get_user_confidence(user_id):
+    if model_artifact is None:
+        return 0.0
+    interaction_count = lookup(model_artifact.get("user_interaction_count", {}), user_id, 0)
+    try:
+        interaction_count = float(interaction_count)
+    except (TypeError, ValueError):
+        interaction_count = 0.0
+    return min(1.0, interaction_count / USER_CONFIDENCE_INTERACTIONS)
+
+
+def get_similarity_score(user_id, product_id):
+    if model_artifact is None:
+        return 0.0
+
+    user_positive_items = lookup(model_artifact.get("user_positive_items", {}), user_id, [])
+    if not user_positive_items:
+        return 0.0
+
+    positive_items = set(user_positive_items)
+    similar_items = model_artifact.get("similar_items", {})
+    best_score = 0.0
+
+    for positive_product_id in positive_items:
+        for similar_product_id, score in lookup(similar_items, positive_product_id, []):
+            if similar_product_id == product_id:
+                best_score = max(best_score, float(score))
+
+    return max(0.0, min(1.0, best_score))
+
+
+def get_content_score(user_id, product_id):
+    if model_artifact is None:
+        return 0.0
+
+    product_category = lookup(model_artifact.get("product_categories", {}), product_id)
+    if product_category is None:
+        return 0.0
+
+    user_affinity = lookup(model_artifact.get("category_affinity", {}), user_id, {})
+    return float(lookup(user_affinity, product_category, 0.0))
+
+
+def build_preference_score(user_id, product_id):
+    estimated_rating = max(0, min(1, estimate_rating(user_id, product_id)))
+    similarity_score = get_similarity_score(user_id, product_id)
+    content_score = get_content_score(user_id, product_id)
+    popularity_score = max(0, min(1, get_popularity_score(product_id)))
+    user_confidence = get_user_confidence(user_id)
+
+    personalized_score = (
+        (COLLABORATIVE_WEIGHT * estimated_rating)
+        + (SIMILARITY_WEIGHT * similarity_score)
+        + (CONTENT_WEIGHT * content_score)
+        + (POPULARITY_WEIGHT * popularity_score)
+    )
+    cold_start_score = (0.75 * popularity_score) + (0.25 * content_score)
+    preference_score = (user_confidence * personalized_score) + ((1 - user_confidence) * cold_start_score)
+
+    return {
+        "estimated_rating": estimated_rating,
+        "similarity_score": similarity_score,
+        "content_score": content_score,
+        "popularity_score": popularity_score,
+        "preference_score": max(0.0, min(1.0, preference_score)),
+        "user_confidence": user_confidence,
+    }
+
+
+def get_recommendation_reason(user_confidence, similarity_score, content_score, popularity_score, proximity_score):
+    if user_confidence >= 0.8:
+        if similarity_score >= 0.5:
+            return "similar_to_liked"
+        if content_score >= 0.5:
+            return "category_match"
+        return "personalized"
+    if proximity_score >= 0.5 and popularity_score >= 0.5:
+        return "popular_nearby"
+    if popularity_score >= 0.5:
+        return "popular"
+    if proximity_score >= 0.5:
+        return "nearby"
+    return "exploration"
 
 
 def score_distance(latitude, longitude, product_latitude, product_longitude):
@@ -125,44 +263,89 @@ def score_distance(latitude, longitude, product_latitude, product_longitude):
     return distance_km, proximity_score
 
 
-def get_top_recommendations(user_id, latitude, longitude, limit=DEFAULT_RECOMMENDATIONS):
+def get_top_recommendations(
+    user_id,
+    latitude,
+    longitude,
+    limit=DEFAULT_RECOMMENDATIONS,
+    distance_weight=DISTANCE_WEIGHT,
+    diversity_weight=DIVERSITY_PENALTY,
+    exclude_seen=True,
+):
     if model_artifact is None or product_catalog is None:
         app.logger.error("Model or data not found.")
         return []
 
     seen_product_ids = get_seen_product_ids(user_id)
+    preference_weight = 1 - distance_weight
     recommendations = []
 
     for product in product_catalog.itertuples(index=False):
         product_id = getattr(product, "product_id")
-        if product_id in seen_product_ids:
+        if exclude_seen and product_id in seen_product_ids:
             continue
 
-        estimated_rating = max(0, min(1, estimate_rating(user_id, product_id)))
+        preference = build_preference_score(user_id, product_id)
         distance_km, proximity_score = score_distance(
             latitude,
             longitude,
             getattr(product, "latitude"),
             getattr(product, "longitude"),
         )
-        final_score = (RATING_WEIGHT * estimated_rating) + (DISTANCE_WEIGHT * proximity_score)
+        final_score = (preference_weight * preference["preference_score"]) + (distance_weight * proximity_score)
 
         recommendation = {
             "user_id": user_id,
             "product_id": to_json_value(product_id),
             "product_name": to_json_value(getattr(product, "Product_name")),
-            "estimated_rating": round(estimated_rating, 4),
+            "estimated_rating": round(preference["estimated_rating"], 4),
+            "similarity_score": round(preference["similarity_score"], 4),
+            "content_score": round(preference["content_score"], 4),
+            "popularity_score": round(preference["popularity_score"], 4),
+            "preference_score": round(preference["preference_score"], 4),
+            "user_confidence": round(preference["user_confidence"], 4),
             "distance_km": round(distance_km, 2),
             "score": round(final_score, 4),
+            "reason": get_recommendation_reason(
+                preference["user_confidence"],
+                preference["similarity_score"],
+                preference["content_score"],
+                preference["popularity_score"],
+                proximity_score,
+            ),
         }
-        if hasattr(product, "background_color"):
-            recommendation["background_color"] = to_json_value(getattr(product, "background_color"))
-        if hasattr(product, "image"):
-            recommendation["image"] = to_json_value(getattr(product, "image"))
+        for column in product_catalog.columns:
+            if column not in {"product_id", "Product_name", "latitude", "longitude"}:
+                recommendation[column] = to_json_value(getattr(product, column))
         recommendations.append(recommendation)
 
-    recommendations.sort(key=lambda item: item["score"], reverse=True)
-    return recommendations[:limit]
+    return diversify_recommendations(recommendations, limit, diversity_weight)
+
+
+def diversify_recommendations(recommendations, limit, diversity_weight):
+    ranked = sorted(recommendations, key=lambda item: item["score"], reverse=True)
+    selected = []
+    used_categories = set()
+
+    while ranked and len(selected) < limit:
+        best_index = 0
+        best_score = None
+
+        for index, item in enumerate(ranked):
+            category = item.get("category") or item.get("category_name")
+            penalty = diversity_weight if category in used_categories else 0
+            adjusted_score = item["score"] - penalty
+            if best_score is None or adjusted_score > best_score:
+                best_score = adjusted_score
+                best_index = index
+
+        selected_item = ranked.pop(best_index)
+        category = selected_item.get("category") or selected_item.get("category_name")
+        if category is not None:
+            used_categories.add(category)
+        selected.append(selected_item)
+
+    return selected
 
 
 @app.before_request
@@ -176,15 +359,34 @@ def ensure_assets_loaded():
 @app.route("/recommend", methods=["GET"])
 def recommend():
     try:
-        user_id, latitude, longitude, limit = parse_request_args()
+        user_id, latitude, longitude, limit, distance_weight, diversity_weight, exclude_seen = parse_request_args()
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
-    recommendations = get_top_recommendations(user_id, latitude, longitude, limit)
+    recommendations = get_top_recommendations(
+        user_id,
+        latitude,
+        longitude,
+        limit,
+        distance_weight,
+        diversity_weight,
+        exclude_seen,
+    )
     if not recommendations and (model_artifact is None or product_catalog is None):
         return jsonify({"error": "Recommendation assets are not available. Train the model first."}), 503
 
-    return jsonify({"recommendations": recommendations})
+    return jsonify(
+        {
+            "recommendations": recommendations,
+            "meta": {
+                "count": len(recommendations),
+                "distance_weight": distance_weight,
+                "diversity_weight": diversity_weight,
+                "exclude_seen": exclude_seen,
+                "model_version": model_artifact.get("version") if model_artifact else None,
+            },
+        }
+    )
 
 
 if __name__ == "__main__":

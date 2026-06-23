@@ -7,6 +7,7 @@ import pandas as pd
 from sklearn.decomposition import TruncatedSVD
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from sklearn.model_selection import train_test_split
+from sklearn.metrics.pairwise import cosine_similarity
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -16,7 +17,21 @@ DATA_PATH = PROJECT_ROOT / "Data" / "Processed.csv"
 MODEL_PATH = PROJECT_ROOT / "Models" / "Model.pkl"
 EXAMPLE_DATA_PATH = PROJECT_ROOT / "Data" / "Processed.example.csv"
 REQUIRED_COLUMNS = {"user_id", "product_id", "is_purchased"}
+MODEL_VERSION = "v4_weighted_hybrid"
 RANDOM_STATE = 42
+POPULARITY_SMOOTHING = 5
+MAX_SIMILAR_ITEMS = 20
+INTERACTION_SCORE_COLUMN = "interaction_score"
+BEHAVIOR_WEIGHTS = {
+    "is_purchased": 1.0,
+    "is_favorite": 0.8,
+    "favorite": 0.8,
+    "added_to_cart": 0.6,
+    "is_cart": 0.6,
+    "cart_count": 0.6,
+    "viewed": 0.2,
+    "view_count": 0.2,
+}
 
 
 def load_interactions(data_path):
@@ -35,23 +50,112 @@ def load_interactions(data_path):
         return None
 
     interactions = data[["user_id", "product_id", "is_purchased"]].dropna().copy()
-    interactions["is_purchased"] = pd.to_numeric(interactions["is_purchased"], errors="coerce").fillna(0)
-    interactions["is_purchased"] = interactions["is_purchased"].clip(0, 1)
-    interactions = interactions.groupby(["user_id", "product_id"], as_index=False)["is_purchased"].max()
+    interactions[INTERACTION_SCORE_COLUMN] = build_interaction_score(data)
+    interactions["is_purchased"] = pd.to_numeric(interactions["is_purchased"], errors="coerce").fillna(0).clip(0, 1)
+    interactions = interactions.groupby(["user_id", "product_id"], as_index=False).agg(
+        is_purchased=("is_purchased", "max"),
+        interaction_score=(INTERACTION_SCORE_COLUMN, "max"),
+    )
 
     logger.info("Loaded %s interaction rows from %s.", len(interactions), data_path)
     return interactions
+
+
+def build_interaction_score(data):
+    if INTERACTION_SCORE_COLUMN in data.columns:
+        return pd.to_numeric(data[INTERACTION_SCORE_COLUMN], errors="coerce").fillna(0).clip(0, 1)
+
+    score = pd.Series(0.0, index=data.index)
+    used_columns = []
+    for column, weight in BEHAVIOR_WEIGHTS.items():
+        if column not in data.columns:
+            continue
+        values = pd.to_numeric(data[column], errors="coerce").fillna(0)
+        if values.max() > 1:
+            values = values / values.max()
+        score += values.clip(0, 1) * weight
+        used_columns.append(column)
+
+    if not used_columns:
+        score = pd.to_numeric(data["is_purchased"], errors="coerce").fillna(0)
+        used_columns = ["is_purchased"]
+
+    logger.info("Built interaction scores from columns: %s", ", ".join(used_columns))
+    return score.clip(0, 1)
 
 
 def build_interaction_matrix(interactions):
     matrix = interactions.pivot_table(
         index="user_id",
         columns="product_id",
-        values="is_purchased",
+        values=INTERACTION_SCORE_COLUMN,
         fill_value=0,
         aggfunc="max",
     )
     return matrix.astype(float)
+
+
+def build_item_similarity(interaction_matrix):
+    product_ids = list(interaction_matrix.columns)
+    if len(product_ids) < 2:
+        return {}
+
+    similarity_matrix = cosine_similarity(interaction_matrix.T)
+    similar_items = {}
+
+    for product_index, product_id in enumerate(product_ids):
+        similarities = []
+        for other_index, other_product_id in enumerate(product_ids):
+            if product_index == other_index:
+                continue
+            score = float(similarity_matrix[product_index, other_index])
+            if score > 0:
+                similarities.append((other_product_id, score))
+
+        similarities.sort(key=lambda item: item[1], reverse=True)
+        similar_items[product_id] = similarities[:MAX_SIMILAR_ITEMS]
+
+    return similar_items
+
+
+def build_user_positive_items(interactions):
+    positive_rows = interactions[interactions[INTERACTION_SCORE_COLUMN] > 0]
+    return positive_rows.groupby("user_id")["product_id"].apply(list).to_dict()
+
+
+def find_category_column(data):
+    for column in ["category", "category_name", "category_id"]:
+        if column in data.columns:
+            return column
+    return None
+
+
+def build_category_affinity(data):
+    category_column = find_category_column(data)
+    if category_column is None or "is_purchased" not in data.columns:
+        return {}, {}
+
+    clean_data = data[["user_id", "product_id", "is_purchased", category_column]].dropna().copy()
+    clean_data[INTERACTION_SCORE_COLUMN] = build_interaction_score(data).loc[clean_data.index]
+    positive_rows = clean_data[clean_data[INTERACTION_SCORE_COLUMN] > 0]
+    if positive_rows.empty:
+        return {}, {}
+
+    user_category_counts = positive_rows.groupby(["user_id", category_column]).size()
+    category_affinity = {}
+    for user_id, user_counts in user_category_counts.groupby(level=0):
+        counts = user_counts.droplevel(0)
+        total = counts.sum()
+        if total:
+            category_affinity[user_id] = {category: float(count / total) for category, count in counts.items()}
+
+    product_categories = (
+        clean_data.dropna(subset=[category_column])
+        .drop_duplicates("product_id")
+        .set_index("product_id")[category_column]
+        .to_dict()
+    )
+    return category_affinity, product_categories
 
 
 def train_model(interaction_matrix):
@@ -87,7 +191,7 @@ def evaluate_model(interactions, interaction_matrix, reconstructed):
         product_index = product_positions.get(row.product_id)
         if user_index is None or product_index is None:
             continue
-        actual.append(row.is_purchased)
+        actual.append(getattr(row, INTERACTION_SCORE_COLUMN))
         predicted.append(reconstructed[user_index, product_index])
 
     if not actual:
@@ -100,22 +204,36 @@ def evaluate_model(interactions, interaction_matrix, reconstructed):
     return rmse, mae
 
 
-def build_model_artifact(interactions):
+def build_model_artifact(interactions, raw_data):
     interaction_matrix = build_interaction_matrix(interactions)
     trained = train_model(interaction_matrix)
+    similar_items = build_item_similarity(interaction_matrix)
+    user_positive_items = build_user_positive_items(interactions)
+    category_affinity, product_categories = build_category_affinity(raw_data)
+    product_stats = interactions.groupby("product_id")[INTERACTION_SCORE_COLUMN].agg(["sum", "count"])
+    global_mean = float(interaction_matrix.values.mean())
+    smoothed_popularity = (
+        (product_stats["sum"] + POPULARITY_SMOOTHING * global_mean)
+        / (product_stats["count"] + POPULARITY_SMOOTHING)
+    ).to_dict()
+    purchase_stats = interactions.groupby("product_id")["is_purchased"].agg(["sum", "count"])
+    product_purchase_count = purchase_stats["sum"].astype(int).to_dict()
+    product_behavior_score = product_stats["sum"].to_dict()
+    product_interaction_count = product_stats["count"].astype(int).to_dict()
+    user_activity = interactions.groupby("user_id")[INTERACTION_SCORE_COLUMN].agg(["sum", "count"])
+    user_purchase_count = interactions.groupby("user_id")["is_purchased"].sum().astype(int).to_dict()
 
     if trained is None:
         reconstructed = None
-        product_scores = interaction_matrix.mean(axis=0).to_dict()
         user_factors = None
         product_factors = None
     else:
         _, user_factors, product_factors, reconstructed = trained
-        product_scores = interaction_matrix.mean(axis=0).to_dict()
         evaluate_model(interactions, interaction_matrix, reconstructed)
 
     return {
         "model_type": "sklearn_truncated_svd",
+        "version": MODEL_VERSION,
         "user_ids": list(interaction_matrix.index),
         "product_ids": list(interaction_matrix.columns),
         "user_id_to_index": {user_id: index for index, user_id in enumerate(interaction_matrix.index)},
@@ -123,8 +241,21 @@ def build_model_artifact(interactions):
         "user_factors": user_factors,
         "product_factors": product_factors,
         "predicted_matrix": reconstructed,
-        "product_popularity": product_scores,
-        "global_mean": float(interaction_matrix.values.mean()),
+        "product_popularity": smoothed_popularity,
+        "similar_items": similar_items,
+        "user_positive_items": user_positive_items,
+        "category_affinity": category_affinity,
+        "product_categories": product_categories,
+        "product_purchase_count": product_purchase_count,
+        "product_behavior_score": product_behavior_score,
+        "product_interaction_count": product_interaction_count,
+        "user_purchase_count": user_purchase_count,
+        "user_behavior_score": user_activity["sum"].to_dict(),
+        "user_interaction_count": user_activity["count"].astype(int).to_dict(),
+        "global_mean": global_mean,
+        "popularity_smoothing": POPULARITY_SMOOTHING,
+        "interaction_score_column": INTERACTION_SCORE_COLUMN,
+        "behavior_weights": BEHAVIOR_WEIGHTS,
     }
 
 
@@ -143,7 +274,8 @@ def main():
             "user_id, product_id, is_purchased. Run Models/EDA.py first or create the CSV manually."
         )
 
-    artifact = build_model_artifact(interactions)
+    raw_data = pd.read_csv(DATA_PATH)
+    artifact = build_model_artifact(interactions, raw_data)
     save_model(artifact, MODEL_PATH)
 
 
